@@ -153,7 +153,7 @@ Control field encoding with struct tags:
 ```go
 type User struct {
     ID        string    `glint:"id"`
-    Secret    string    `glint:"-"`              // Skip this field
+    Secret    string                             // Skip this field
     Data      []byte    `glint:"data,copy"`      // Copy bytes instead of referencing
     CreatedAt time.Time `glint:"created_at"`
 }
@@ -253,7 +253,7 @@ Glint excels in scenarios where:
 - **Performance matters**: High-throughput services, real-time systems
 - **Schema flexibility is needed**: Microservices with independent deployment
 - **Storage is constrained**: IoT devices, embedded systems, high-volume logging
-- **Go-native solution preferred**: No external tooling or code generation
+- **Go-native solution preferred**: No code generation
 
 ## License
 
