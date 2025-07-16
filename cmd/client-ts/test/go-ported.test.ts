@@ -36,7 +36,7 @@ function testZigzagVarintEncoding() {
     // Manually encode zigzag
     const encoded = encodeZigzag(input);
     const reader = new BinaryReader(encoded);
-    const decoded = reader.readZigzag();
+    const decoded = reader.readInt();
     
     assert.strictEqual(decoded, expected, 
       `Test case ${index}: zigzag decode failed for ${input}`);

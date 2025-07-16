@@ -41,7 +41,7 @@ function testBinaryReader() {
   // Test zigzag decoding
   const zigzagData = createTestData([0x01]); // -1 in zigzag (correct encoding)
   const reader2 = new BinaryReader(zigzagData);
-  const zigzag = reader2.readZigzag();
+  const zigzag = reader2.readInt();
   assert.strictEqual(zigzag, -1, 'Zigzag decoding failed');
   console.log('  ✓ Zigzag decoding works');
 

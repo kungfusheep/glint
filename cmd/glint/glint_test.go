@@ -93,6 +93,11 @@ func createTestDocument() []byte {
 }
 
 func createComprehensiveTestDocument() []byte {
+
+	// print the pwd of every claude pid 
+	//  ps -eo pid,comm | grep claude | xargs -I {} sh -c 'echo "PID: {}"; pwd; echo'
+
+
 	nickname := "TU"
 	score := 89
 	

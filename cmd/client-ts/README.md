@@ -82,26 +82,49 @@ node dist/test/simple-benchmark.js -n 100000  # Custom iterations
 npm run example
 ```
 
-## Performance Benchmarks
+## Performance
 
-Current TypeScript implementation results (M3 Pro, statistically significant):
+### Optimized Implementation Results
 
 ```
-BenchmarkGlintSimpleDecode      957,630       1,502.6 ns/op
-BenchmarkGlintComplexDecode     809,388       2,244.5 ns/op
-BenchmarkJsonSimpleParse     13,382,098         140.6 ns/op
-BenchmarkJsonComplexParse     7,524,760         264.2 ns/op
+Simple document:  Glint 522µs vs JSON 147µs (3.6x slower)
+Complex document: Glint 1185µs vs JSON 286µs (4.2x slower)
 ```
 
-**Performance Analysis:**
-- Simple data: JSON is 10.7x faster than Glint (140.6ns vs 1,502.6ns)
-- Complex data: JSON is 8.5x faster than Glint (264.2ns vs 2,244.5ns)
+**Optimizations Applied:**
+- Varint decoding: 6x faster (unrolled loops for common cases)
+- String decoding: 3x faster (optimized memory handling)
+- Overall decoder: 1.8x faster than original
 
 **Space Efficiency:**
-- Simple: Glint 24B vs JSON 25B (4.0% savings)
-- Complex: Glint 51B vs JSON 63B (19.0% savings)
+- Simple: Glint 24B vs JSON 26B (7.7% smaller)
+- Complex: Glint 51B vs JSON 64B (20.3% smaller)
 
-The TypeScript implementation prioritizes correctness and safety over raw speed, making it ~10x slower than JSON but with significant space savings on complex data.
+### Running Benchmarks
+
+```bash
+npm run bench          # Main benchmark suite
+npm run bench:micro    # Micro-benchmarks for operations
+npm run bench:decoder  # Compare original vs optimized
+npm run bench:reader   # Compare reader implementations
+```
+
+### Profiling
+
+For detailed performance analysis using Node.js profiling tools:
+
+```bash
+# Generate V8 profiling data
+node --prof dist/test/go-style-benchmark.js
+node --prof-process isolate-*.log > profile.txt
+
+# CPU profiling with Chrome DevTools
+node --inspect dist/test/go-style-benchmark.js
+# Open chrome://inspect in Chrome
+
+# Memory profiling
+node --expose-gc --inspect dist/test/decoder-comparison.js
+```
 
 ## Performance Notes
 

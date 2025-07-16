@@ -56,7 +56,7 @@ export class GlintDecoder {
     } else {
       // Cache hit - skip schema parsing
       this.cacheStats.hits++;
-      reader.readBytes(schemaSize);
+      reader.skipBytes(schemaSize);
     }
     
     // Decode body
@@ -130,7 +130,7 @@ export class GlintDecoder {
   /**
    * Decode a single value based on wire type
    */
-  private decodeValue(
+  protected decodeValue(
     reader: BinaryReader,
     wireType: number,
     subSchema: SchemaField[] | undefined,
@@ -253,23 +253,19 @@ export class GlintDecoder {
   }
 
   /**
+   * Get cache statistics
+   */
+  getCacheStats(): { hits: number, misses: number, hitRate: number } {
+    const total = this.cacheStats.hits + this.cacheStats.misses;
+    const hitRate = total > 0 ? this.cacheStats.hits / total : 0;
+    return { ...this.cacheStats, hitRate };
+  }
+
+  /**
    * Clear the schema cache
    */
   clearCache(): void {
     this.schemaCache.clear();
     this.cacheStats = { hits: 0, misses: 0 };
-  }
-
-  /**
-   * Get cache statistics
-   */
-  getCacheStats(): { hits: number; misses: number; hitRate: number; cacheSize: number } {
-    const total = this.cacheStats.hits + this.cacheStats.misses;
-    return {
-      hits: this.cacheStats.hits,
-      misses: this.cacheStats.misses,
-      hitRate: total > 0 ? this.cacheStats.hits / total : 0,
-      cacheSize: this.schemaCache.size
-    };
   }
 }
