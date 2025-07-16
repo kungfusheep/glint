@@ -111,7 +111,7 @@ class ProfiledGlintDecoder extends GlintDecoder {
   }
 }
 
-function runBenchmark(name: string, data: Uint8Array | string, decoder: any, iterations: number): BenchmarkResult {
+function runBenchmark(name: string, data: Uint8Array | string, decoder: any, targetTime: number = 2000): BenchmarkResult {
   // Warmup
   for (let i = 0; i < 100; i++) {
     if (typeof data === 'string') {
@@ -124,29 +124,78 @@ function runBenchmark(name: string, data: Uint8Array | string, decoder: any, ite
   // Force GC if available
   if (global.gc) global.gc();
   
-  // Actual benchmark
-  const start = process.hrtime.bigint();
+  // Go-style adaptive benchmarking
+  let iterations = 1;
+  let duration = 0;
   
-  for (let i = 0; i < iterations; i++) {
-    if (typeof data === 'string') {
-      JSON.parse(data);
-    } else {
-      decoder.decode(data);
+  // Keep doubling iterations until we get at least 1 second of runtime
+  while (duration < 1000) {
+    const start = process.hrtime.bigint();
+    
+    for (let i = 0; i < iterations; i++) {
+      if (typeof data === 'string') {
+        JSON.parse(data);
+      } else {
+        decoder.decode(data);
+      }
+    }
+    
+    const end = process.hrtime.bigint();
+    duration = Number(end - start) / 1000000; // Convert to ms
+    
+    if (duration < 1000) {
+      // Double the iterations for next attempt
+      iterations *= 2;
+    }
+  }
+  
+  // Now run for the target time with progress updates
+  const start = process.hrtime.bigint();
+  let totalIterations = 0;
+  let lastUpdate = 0;
+  
+  process.stdout.write(`${iterations.toLocaleString()}-`);
+  
+  while (true) {
+    const batchStart = process.hrtime.bigint();
+    
+    for (let i = 0; i < iterations; i++) {
+      if (typeof data === 'string') {
+        JSON.parse(data);
+      } else {
+        decoder.decode(data);
+      }
+    }
+    
+    const batchEnd = process.hrtime.bigint();
+    totalIterations += iterations;
+    
+    const elapsed = Number(batchEnd - start) / 1000000;
+    
+    // Show progress every 1000ms
+    if (elapsed - lastUpdate > 1000) {
+      process.stdout.write(`${totalIterations.toLocaleString()}-`);
+      lastUpdate = elapsed;
+    }
+    
+    // Stop if we've run long enough
+    if (elapsed > targetTime) {
+      break;
     }
   }
   
   const end = process.hrtime.bigint();
   const totalNs = Number(end - start);
   const totalMs = totalNs / 1000000;
-  const avgNs = totalNs / iterations;
+  const avgNs = totalNs / totalIterations;
   const opsPerSec = 1000000000 / avgNs;
   
   const dataSize = typeof data === 'string' ? data.length : data.length;
-  const mbPerSec = (dataSize * iterations / (1024 * 1024)) / (totalMs / 1000);
+  const mbPerSec = (dataSize * totalIterations / (1024 * 1024)) / (totalMs / 1000);
   
   return {
     name,
-    iterations,
+    iterations: totalIterations,
     totalMs,
     avgNs,
     opsPerSec,
@@ -198,16 +247,19 @@ async function main(): Promise<void> {
     const glintData = new Uint8Array(fs.readFileSync(glintPath));
     const jsonData = fs.readFileSync(jsonPath, 'utf8');
     
-    // Determine iterations based on data size
-    const iterations = glintData.length < 1000 ? 10000 : 
-                      glintData.length < 100000 ? 1000 : 
-                      glintData.length < 1000000 ? 100 : 10;
-    
     try {
-      const glintResult = runBenchmark(`Glint-${dataset.name}`, glintData, decoder, iterations);
-      const jsonResult = runBenchmark(`JSON-${dataset.name}`, jsonData, null, iterations);
+      console.log(`\nBenchmark${dataset.name.padEnd(8)} `);
+      process.stdout.write(`  Glint: `);
+      const glintResult = runBenchmark(`Glint-${dataset.name}`, glintData, decoder, 2000);
+      console.log(` ${glintResult.iterations.toLocaleString()} iterations (${glintResult.totalMs.toFixed(0)}ms)`);
+      
+      process.stdout.write(`  JSON:  `);
+      const jsonResult = runBenchmark(`JSON-${dataset.name}`, jsonData, null, 2000);
+      console.log(` ${jsonResult.iterations.toLocaleString()} iterations (${jsonResult.totalMs.toFixed(0)}ms)`);
+      
       results.push({ dataset: dataset.name, glint: glintResult, json: jsonResult });
     } catch (error) {
+      console.log(`\n  Error: ${(error as Error).message}`);
       results.push({ dataset: dataset.name, error: (error as Error).message });
     }
   }
@@ -269,11 +321,33 @@ async function main(): Promise<void> {
   
   const simpleData = new Uint8Array(fs.readFileSync(path.join(testDir, 'simple.glint')));
   
+  console.log('Running performance profile...');
   profiler.start();
-  for (let i = 0; i < 1000; i++) {
+  
+  // Run for 2 seconds with progress updates
+  const targetTime = 2000; // 2 seconds
+  const start = process.hrtime.bigint();
+  let iterations = 0;
+  let lastUpdate = 0;
+  
+  while (true) {
     profiledDecoder.decode(simpleData);
+    iterations++;
+    
+    if (iterations % 10000 === 0) {
+      const elapsed = Number(process.hrtime.bigint() - start) / 1000000;
+      
+      // Show progress every 1000ms
+      if (elapsed - lastUpdate > 1000) {
+        process.stdout.write(`${iterations.toLocaleString()}-`);
+        lastUpdate = elapsed;
+      }
+      
+      if (elapsed > targetTime) break;
+    }
   }
   
+  console.log(`\nCompleted ${iterations.toLocaleString()} iterations for profiling`);
   const timings = profiler.getResults();
   console.log('Operation                Count      Avg Time    Total %');
   console.log('─'.repeat(80));
