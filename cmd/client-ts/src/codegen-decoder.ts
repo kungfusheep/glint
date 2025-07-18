@@ -11,22 +11,48 @@ const DECODER_CACHE = new Map<string, Function>();
 
 // Helper functions that will be available in generated code
 const HELPERS = `
-// Extract varint inline for maximum performance
+// Extract varint inline for maximum performance - supports up to 10 bytes for uint64
 function extractVarint(data, pos) {
-  const b0 = data[pos];
-  if (b0 < 0x80) return { value: b0, bytes: 1 };
+  let value = 0;
+  let shift = 0;
+  let bytes = 0;
   
-  const b1 = data[pos + 1];
-  if (b1 < 0x80) return { value: (b0 & 0x7f) | (b1 << 7), bytes: 2 };
+  while (bytes < 10) { // Max 10 bytes for uint64
+    const b = data[pos + bytes];
+    bytes++;
+    
+    value |= (b & 0x7f) << shift;
+    
+    if ((b & 0x80) === 0) {
+      break;
+    }
+    
+    shift += 7;
+  }
   
-  const b2 = data[pos + 2];
-  if (b2 < 0x80) return { value: (b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), bytes: 3 };
+  return { value, bytes };
+}
+
+// Extract varint with BigInt precision for Float64 values
+function extractVarintBig(data, pos) {
+  let value = 0n;
+  let shift = 0n;
+  let bytes = 0;
   
-  const b3 = data[pos + 3];
-  if (b3 < 0x80) return { value: (b0 & 0x7f) | ((b1 & 0x7f) << 7) | ((b2 & 0x7f) << 14) | (b3 << 21), bytes: 4 };
+  while (bytes < 10) { // Max 10 bytes for uint64
+    const b = data[pos + bytes];
+    bytes++;
+    
+    value |= BigInt(b & 0x7f) << shift;
+    
+    if ((b & 0x80) === 0) {
+      break;
+    }
+    
+    shift += 7n;
+  }
   
-  const b4 = data[pos + 4];
-  return { value: (b0 & 0x7f) | ((b1 & 0x7f) << 7) | ((b2 & 0x7f) << 14) | ((b3 & 0x7f) << 21) | (b4 << 28), bytes: 5 };
+  return { value, bytes };
 }
 
 // Decode zigzag encoded integer
@@ -292,14 +318,12 @@ export class CodegenGlintDecoder {
       case 13: // Float64
         code += `${indent}{\n`;
         code += `${indent}  // Float64 is encoded as varint (uint64 bits), not raw IEEE 754\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  // Convert uint64 bits back to Float64\n`;
+        code += `${indent}  // Convert uint64 bits back to Float64 using BigInt for precision\n`;
         code += `${indent}  const buffer = new ArrayBuffer(8);\n`;
         code += `${indent}  const view = new DataView(buffer);\n`;
-        code += `${indent}  // Write the uint64 as little-endian\n`;
-        code += `${indent}  view.setUint32(0, v.value & 0xFFFFFFFF, true);\n`;
-        code += `${indent}  view.setUint32(4, (v.value >>> 32) & 0xFFFFFFFF, true);\n`;
+        code += `${indent}  view.setBigUint64(0, v.value, true);\n`;
         code += `${indent}  ${target} = view.getFloat64(0, true);\n`;
         code += `${indent}}\n`;
         break;
