@@ -291,12 +291,16 @@ export class CodegenGlintDecoder {
         
       case 13: // Float64
         code += `${indent}{\n`;
-        code += `${indent}  if (pos + 8 > data.length) throw new Error('Float64 read out of bounds at position ' + pos);\n`;
-        code += `${indent}  // Create a new Uint8Array slice to avoid buffer offset issues\n`;
-        code += `${indent}  const bytes = data.slice(pos, pos + 8);\n`;
-        code += `${indent}  const view = new DataView(bytes.buffer, 0, 8);\n`;
+        code += `${indent}  // Float64 is encoded as varint (uint64 bits), not raw IEEE 754\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  // Convert uint64 bits back to Float64\n`;
+        code += `${indent}  const buffer = new ArrayBuffer(8);\n`;
+        code += `${indent}  const view = new DataView(buffer);\n`;
+        code += `${indent}  // Write the uint64 as little-endian\n`;
+        code += `${indent}  view.setUint32(0, v.value & 0xFFFFFFFF, true);\n`;
+        code += `${indent}  view.setUint32(4, (v.value >>> 32) & 0xFFFFFFFF, true);\n`;
         code += `${indent}  ${target} = view.getFloat64(0, true);\n`;
-        code += `${indent}  pos += 8;\n`;
         code += `${indent}}\n`;
         break;
         

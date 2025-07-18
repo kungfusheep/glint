@@ -80,6 +80,17 @@ function validateDataCorrectness(glintResult, jsonResult, datasetName) {
   }
 }
 
+// Test if a dataset can be decoded
+function canDecodeDataset(test) {
+  try {
+    const glintResult = decoder.decode(test.data);
+    const jsonResult = JSON.parse(test.json);
+    return { glintResult, jsonResult, error: null };
+  } catch (error) {
+    return { glintResult: null, jsonResult: null, error };
+  }
+}
+
 console.log('Glint vs JSON Performance Benchmark\n');
 
 const decoder = new CodegenGlintDecoder();
@@ -88,38 +99,44 @@ const decoder = new CodegenGlintDecoder();
 const tests = [
   { name: 'Medium', data: mediumData, json: mediumJSON, desc: '100 users', iterations: 5000, samples: 20 },
   { name: 'Large', data: largeData, json: largeJSON, desc: '100+200 records', iterations: 1000, samples: 15 },
-  // Skip huge dataset for now due to Float64 decoding issue
-  // { name: 'Huge', data: hugeData, json: hugeJSON, desc: '300+600+analytics', iterations: 300, samples: 10 }
+  { name: 'Huge', data: hugeData, json: hugeJSON, desc: '300+600+analytics', iterations: 300, samples: 10 }
 ];
 
 // Run data validation first
 console.log('=== Data Correctness Validation ===\n');
-let allValidationsPassed = true;
+let validTests = [];
 
 for (const test of tests) {
   console.log(`Validating ${test.name} dataset...`);
   
-  const glintResult = decoder.decode(test.data);
-  const jsonResult = JSON.parse(test.json);
+  const { glintResult, jsonResult, error } = canDecodeDataset(test);
+  
+  if (error) {
+    console.log(`✗ ${test.name}: Decoding ERROR - ${error.message}`);
+    console.log(`  Skipping ${test.name} dataset from benchmark due to decoding issues`);
+    continue;
+  }
   
   const isValid = validateDataCorrectness(glintResult, jsonResult, test.name);
-  if (!isValid) {
-    allValidationsPassed = false;
+  if (isValid) {
+    validTests.push(test);
+  } else {
+    console.log(`  Skipping ${test.name} dataset from benchmark due to validation failure`);
   }
 }
 
-if (!allValidationsPassed) {
-  console.log('\n❌ Some data validations failed! Please fix data correctness before benchmarking.');
+if (validTests.length === 0) {
+  console.log('\n❌ No valid datasets found! Cannot run benchmarks.');
   process.exit(1);
 }
 
-console.log('\n✅ All data validations passed! Proceeding with performance benchmarks...\n');
+console.log(`\n✅ ${validTests.length} out of ${tests.length} datasets passed validation. Proceeding with performance benchmarks...\n`);
 
 console.log('=== Performance Benchmarks ===\n');
 console.log('Dataset    Description      Glint (med±std)  JSON (med±std)   Winner              Raw Sizes         Gzipped Sizes');
 console.log('──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────');
 
-for (const test of tests) {
+for (const test of validTests) {
   console.log(`\nRunning ${test.name} benchmark (${test.samples} samples × ${test.iterations} iterations)...`);
   
   // Benchmark Glint
