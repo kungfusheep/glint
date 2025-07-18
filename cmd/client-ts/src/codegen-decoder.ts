@@ -74,6 +74,8 @@ interface CompiledField {
   isPointer: boolean;
   isSlice: boolean;
   subSchema?: CachedSchema;
+  mapKeyType?: number;
+  mapValueType?: number;
 }
 
 export class CodegenGlintDecoder {
@@ -311,8 +313,53 @@ export class CodegenGlintDecoder {
         code += `${indent}pos++;\n`;
         break;
         
+      case 4: // Int16
+        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}if (${target} >= 32768) ${target} -= 65536;\n`;
+        code += `${indent}pos += 2;\n`;
+        break;
+        
+      case 5: // Int32
+        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}pos += 4;\n`;
+        break;
+        
+      case 6: // Int64 (zigzag varint)
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  ${target} = zigzagDecode(v.value);\n`;
+        code += `${indent}}\n`;
+        break;
+        
       case 8: // Uint8
         code += `${indent}${target} = data[pos++];\n`;
+        break;
+        
+      case 9: // Uint16
+        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}pos += 2;\n`;
+        break;
+        
+      case 10: // Uint32
+        code += `${indent}${target} = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}pos += 4;\n`;
+        break;
+        
+      case 11: // Uint64 (varint)
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  ${target} = v.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 12: // Float32
+        code += `${indent}{\n`;
+        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
+        code += `${indent}  ${target} = view.getFloat32(0, true);\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
         break;
         
       case 13: // Float64
@@ -346,22 +393,35 @@ export class CodegenGlintDecoder {
         code += `${indent}}\n`;
         break;
         
+      case 15: // Bytes ([]byte)
+        code += `${indent}{\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += len.bytes;\n`;
+        code += `${indent}  ${target} = data.slice(pos, pos + len.value);\n`;
+        code += `${indent}  pos += len.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 18: // Time
+        code += `${indent}{\n`;
+        code += `${indent}  // Time encoded as Unix nanoseconds (int64 zigzag varint)\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
+        code += `${indent}  ${target} = new Date(nanos / 1000000);\n`;
+        code += `${indent}}\n`;
+        break;
+        
       case 17: // Map
         code += `${indent}{\n`;
         code += `${indent}  const mapLen = extractVarint(data, pos);\n`;
         code += `${indent}  pos += mapLen.bytes;\n`;
         code += `${indent}  const map = {};\n`;
         code += `${indent}  for (let i = 0; i < mapLen.value; i++) {\n`;
-        code += `${indent}    // Decode key (string)\n`;
-        code += `${indent}    const keyLen = extractVarint(data, pos);\n`;
-        code += `${indent}    pos += keyLen.bytes;\n`;
-        code += `${indent}    const key = textDecoder.decode(data.subarray(pos, pos + keyLen.value));\n`;
-        code += `${indent}    pos += keyLen.value;\n`;
-        code += `${indent}    // Decode value (string) - TODO: handle other types\n`;
-        code += `${indent}    const valLen = extractVarint(data, pos);\n`;
-        code += `${indent}    pos += valLen.bytes;\n`;
-        code += `${indent}    const val = textDecoder.decode(data.subarray(pos, pos + valLen.value));\n`;
-        code += `${indent}    pos += valLen.value;\n`;
+        code += `${indent}    // Decode key\n`;
+        code += this.generateMapKeyDecoding(field, indent + '    ');
+        code += `${indent}    // Decode value\n`;
+        code += this.generateMapValueDecoding(field, indent + '    ');
         code += `${indent}    map[key] = val;\n`;
         code += `${indent}  }\n`;
         code += `${indent}  ${target} = map;\n`;
@@ -371,6 +431,158 @@ export class CodegenGlintDecoder {
       default:
         code += `${indent}// TODO: Implement type ${field.baseType}\n`;
         code += `${indent}${target} = null;\n`;
+    }
+    
+    return code;
+  }
+
+  /**
+   * Generate map key decoding (sets 'key' variable)
+   */
+  private generateMapKeyDecoding(field: CompiledField, indent: string): string {
+    const keyType = field.mapKeyType || 14; // Default to string
+    return this.generateTypedValueCode(keyType, 'key', indent);
+  }
+
+  /**
+   * Generate map value decoding (sets 'val' variable)
+   */
+  private generateMapValueDecoding(field: CompiledField, indent: string): string {
+    const valueType = field.mapValueType || 14; // Default to string
+    return this.generateTypedValueCode(valueType, 'val', indent);
+  }
+
+  /**
+   * Generate code to decode a specific wire type into a variable
+   */
+  private generateTypedValueCode(wireType: number, varName: string, indent: string): string {
+    let code = '';
+    
+    switch (wireType) {
+      case 1: // Bool
+        code += `${indent}const ${varName} = data[pos++] !== 0;\n`;
+        break;
+        
+      case 2: // Int (zigzag)
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const ${varName} = zigzagDecode(v.value);\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 7: // Uint
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const ${varName} = v.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 3: // Int8
+        code += `${indent}const ${varName} = data[pos] << 24 >> 24;\n`;
+        code += `${indent}pos++;\n`;
+        break;
+        
+      case 4: // Int16
+        code += `${indent}{\n`;
+        code += `${indent}  let val = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}  if (val >= 32768) val -= 65536;\n`;
+        code += `${indent}  const ${varName} = val;\n`;
+        code += `${indent}  pos += 2;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 5: // Int32
+        code += `${indent}{\n`;
+        code += `${indent}  const ${varName} = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 6: // Int64 (zigzag varint)
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const ${varName} = zigzagDecode(v.value);\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 8: // Uint8
+        code += `${indent}const ${varName} = data[pos++];\n`;
+        break;
+        
+      case 9: // Uint16
+        code += `${indent}{\n`;
+        code += `${indent}  const ${varName} = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}  pos += 2;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 10: // Uint32
+        code += `${indent}{\n`;
+        code += `${indent}  const ${varName} = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 11: // Uint64 (varint)
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const ${varName} = v.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 12: // Float32
+        code += `${indent}{\n`;
+        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
+        code += `${indent}  const ${varName} = view.getFloat32(0, true);\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 13: // Float64
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const buffer = new ArrayBuffer(8);\n`;
+        code += `${indent}  const view = new DataView(buffer);\n`;
+        code += `${indent}  view.setBigUint64(0, v.value, true);\n`;
+        code += `${indent}  const ${varName} = view.getFloat64(0, true);\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 14: // String
+        code += `${indent}{\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += len.bytes;\n`;
+        code += `${indent}  const ${varName} = textDecoder.decode(data.subarray(pos, pos + len.value));\n`;
+        code += `${indent}  pos += len.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 15: // Bytes ([]byte)
+        code += `${indent}{\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += len.bytes;\n`;
+        code += `${indent}  const ${varName} = data.slice(pos, pos + len.value);\n`;
+        code += `${indent}  pos += len.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 18: // Time
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
+        code += `${indent}  const ${varName} = new Date(nanos / 1000000);\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      default:
+        code += `${indent}// TODO: Implement wire type ${wireType} for ${varName}\n`;
+        code += `${indent}const ${varName} = null;\n`;
     }
     
     return code;
@@ -399,6 +611,70 @@ export class CodegenGlintDecoder {
         code += `${indent}const value = v.value;\n`;
         break;
         
+      case 3: // Int8
+        code += `${indent}const value = data[pos] << 24 >> 24;\n`;
+        code += `${indent}pos++;\n`;
+        break;
+        
+      case 4: // Int16
+        code += `${indent}{\n`;
+        code += `${indent}  let val = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}  if (val >= 32768) val -= 65536;\n`;
+        code += `${indent}  const value = val;\n`;
+        code += `${indent}  pos += 2;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 5: // Int32
+        code += `${indent}const value = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}pos += 4;\n`;
+        break;
+        
+      case 6: // Int64 (zigzag varint)
+        code += `${indent}const v = extractVarint(data, pos);\n`;
+        code += `${indent}pos += v.bytes;\n`;
+        code += `${indent}const value = zigzagDecode(v.value);\n`;
+        break;
+        
+      case 8: // Uint8
+        code += `${indent}const value = data[pos++];\n`;
+        break;
+        
+      case 9: // Uint16
+        code += `${indent}const value = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}pos += 2;\n`;
+        break;
+        
+      case 10: // Uint32
+        code += `${indent}const value = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}pos += 4;\n`;
+        break;
+        
+      case 11: // Uint64 (varint)
+        code += `${indent}const v = extractVarint(data, pos);\n`;
+        code += `${indent}pos += v.bytes;\n`;
+        code += `${indent}const value = v.value;\n`;
+        break;
+        
+      case 12: // Float32
+        code += `${indent}{\n`;
+        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
+        code += `${indent}  const value = view.getFloat32(0, true);\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 13: // Float64
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const buffer = new ArrayBuffer(8);\n`;
+        code += `${indent}  const view = new DataView(buffer);\n`;
+        code += `${indent}  view.setBigUint64(0, v.value, true);\n`;
+        code += `${indent}  const value = view.getFloat64(0, true);\n`;
+        code += `${indent}}\n`;
+        break;
+        
       case 14: // String
         code += `${indent}const strLen = extractVarint(data, pos);\n`;
         code += `${indent}pos += strLen.bytes;\n`;
@@ -412,6 +688,24 @@ export class CodegenGlintDecoder {
         code += `${indent}} else {\n`;
         code += `${indent}  value = textDecoder.decode(data.subarray(pos, pos + strLen.value));\n`;
         code += `${indent}  pos += strLen.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 15: // Bytes ([]byte)
+        code += `${indent}{\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += len.bytes;\n`;
+        code += `${indent}  const value = data.slice(pos, pos + len.value);\n`;
+        code += `${indent}  pos += len.value;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 18: // Time
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
+        code += `${indent}  const value = new Date(nanos / 1000000);\n`;
         code += `${indent}}\n`;
         break;
         
@@ -464,6 +758,10 @@ export class CodegenGlintDecoder {
         pos += keyType.bytes;
         const valueType = this.extractVarint(data, pos);
         pos += valueType.bytes;
+        
+        // Store map key/value types for code generation
+        fields[fields.length - 1].mapKeyType = keyType.value;
+        fields[fields.length - 1].mapValueType = valueType.value;
       }
     }
     
