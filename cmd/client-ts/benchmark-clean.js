@@ -3,14 +3,14 @@ const zlib = require('zlib');
 const { CodegenGlintDecoder } = require('./dist/src/codegen-decoder');
 
 // Load test data - using JSON files for direct comparison
-const mediumData = fs.readFileSync('./test/medium-go.glint');
-const mediumJSON = fs.readFileSync('./test/medium-go.json', 'utf8');
+const mediumData = fs.readFileSync('./test/benchmark-medium.glint');
+const mediumJSON = fs.readFileSync('./test/benchmark-medium.json', 'utf8');
 
-const largeData = fs.readFileSync('./test/large-go.glint');
-const largeJSON = fs.readFileSync('./test/large-go.json', 'utf8');
+const largeData = fs.readFileSync('./test/benchmark-large.glint');
+const largeJSON = fs.readFileSync('./test/benchmark-large.json', 'utf8');
 
-const hugeData = fs.readFileSync('./test/huge-go.glint');
-const hugeJSON = fs.readFileSync('./test/huge-go.json', 'utf8');
+const hugeData = fs.readFileSync('./test/benchmark-huge.glint');
+const hugeJSON = fs.readFileSync('./test/benchmark-huge.json', 'utf8');
 
 // Stable benchmark function with multiple samples
 function benchmark(fn, iterations = 1000, samples = 10) {
