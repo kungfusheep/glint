@@ -106,7 +106,7 @@ export class BinaryReader {
   }
 
   /**
-   * Optimized string reading
+   * Optimized string reading with fast ASCII path
    */
   readString(maxLength?: number): string {
     const length = this.readVarint();
@@ -118,17 +118,31 @@ export class BinaryReader {
       throw new GlintError('Unexpected end of data');
     }
     
-    // For small strings, avoid subarray overhead
-    if (length < 32) {
-      const bytes = new Uint8Array(length);
-      for (let i = 0; i < length; i++) {
-        bytes[i] = this.data[this.pos + i];
+    // For short strings (<=16 chars), fromCharCode is fastest
+    if (length <= 16) {
+      let result = '';
+      const startPos = this.pos;
+      const endPos = startPos + length;
+      
+      // Check if it's pure ASCII first
+      let allAscii = true;
+      for (let i = startPos; i < endPos; i++) {
+        if (this.data[i] > 127) {
+          allAscii = false;
+          break;
+        }
       }
-      this.pos += length;
-      return this.textDecoder.decode(bytes);
+      
+      if (allAscii) {
+        for (let i = startPos; i < endPos; i++) {
+          result += String.fromCharCode(this.data[i]);
+        }
+        this.pos = endPos;
+        return result;
+      }
     }
     
-    // For larger strings, use subarray
+    // Fall back to TextDecoder for non-ASCII or large strings
     const bytes = this.data.subarray(this.pos, this.pos + length);
     this.pos += length;
     return this.textDecoder.decode(bytes);

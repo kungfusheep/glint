@@ -12,7 +12,7 @@ import { GlintDecoder } from './decoder';
 import { DecoderOptions, DecodedObject } from './types';
 
 /**
- * Convenience function to decode Glint data
+ * Convenience function to decode Glint data (uses optimized decoder)
  */
 export function decode(data: Uint8Array, options?: DecoderOptions): DecodedObject {
   const decoder = new GlintDecoder(options);

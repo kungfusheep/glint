@@ -8,10 +8,7 @@
     "build": "tsc",
     "test": "npm run build && node dist/test/decoder.test.js",
     "test:all": "npm run build && node dist/test/decoder.test.js && node dist/test/go-ported.test.js && node dist/test/real-data.test.js",
-    "bench": "npm run build && node --expose-gc dist/test/benchmark.js",
-    "bench:micro": "npm run build && node dist/test/micro-benchmark.js",
-    "profile": "npm run build && node --prof dist/test/profile-v8.js",
-    "profile:inspect": "npm run build && node --inspect-brk dist/test/profile-v8.js",
+    "bench": "npm run build && node benchmark-clean.js",
     "example": "npm run build && node dist/examples/basic.js"
   },
   "keywords": ["glint", "binary", "serialization", "decoder"],

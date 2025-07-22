@@ -422,7 +422,7 @@ export class CodegenGlintDecoder {
         code += this.generateMapKeyDecoding(field, indent + '    ');
         code += `${indent}    // Decode value\n`;
         code += this.generateMapValueDecoding(field, indent + '    ');
-        code += `${indent}    map[key] = val;\n`;
+        code += `${indent}    map[key_${field.name}] = val_${field.name};\n`;
         code += `${indent}  }\n`;
         code += `${indent}  ${target} = map;\n`;
         code += `${indent}}\n`;
@@ -441,7 +441,8 @@ export class CodegenGlintDecoder {
    */
   private generateMapKeyDecoding(field: CompiledField, indent: string): string {
     const keyType = field.mapKeyType || 14; // Default to string
-    return this.generateTypedValueCode(keyType, 'key', indent);
+    // Use unique variable name to avoid conflicts
+    return this.generateTypedValueCode(keyType, `key_${field.name}`, indent);
   }
 
   /**
@@ -449,7 +450,8 @@ export class CodegenGlintDecoder {
    */
   private generateMapValueDecoding(field: CompiledField, indent: string): string {
     const valueType = field.mapValueType || 14; // Default to string
-    return this.generateTypedValueCode(valueType, 'val', indent);
+    // Use unique variable name to avoid conflicts
+    return this.generateTypedValueCode(valueType, `val_${field.name}`, indent);
   }
 
   /**

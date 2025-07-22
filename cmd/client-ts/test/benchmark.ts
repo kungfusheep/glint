@@ -68,48 +68,7 @@ class PerformanceProfiler {
   }
 }
 
-// Instrumented decoder for profiling
-class ProfiledGlintDecoder extends GlintDecoder {
-  private profiler?: PerformanceProfiler;
-  
-  setProfiler(profiler: PerformanceProfiler): void {
-    this.profiler = profiler;
-  }
-  
-  decode(data: Uint8Array): any {
-    if (!this.profiler) {
-      return super.decode(data);
-    }
-    
-    let result: any;
-    this.profiler.measure('decode-total', () => {
-      result = super.decode(data);
-    });
-    return result;
-  }
-  
-  protected decodeValue(reader: any, wireType: number, subSchema: any, context: any): any {
-    if (!this.profiler) {
-      return super.decodeValue(reader, wireType, subSchema, context);
-    }
-    
-    const baseType = wireType & 0x1f;
-    const typeName = this.getTypeName(baseType);
-    
-    let result: any;
-    this.profiler.measure(`decode-${typeName}`, () => {
-      result = super.decodeValue(reader, wireType, subSchema, context);
-    });
-    return result;
-  }
-  
-  private getTypeName(wireType: number): string {
-    const types: { [key: number]: string } = {
-      1: 'bool', 2: 'int', 7: 'uint', 14: 'string', 16: 'struct'
-    };
-    return types[wireType] || 'unknown';
-  }
-}
+// Note: Detailed profiling removed - use external profiling tools for analysis
 
 function runBenchmark(name: string, data: Uint8Array | string, decoder: any, targetTime: number = 2000): BenchmarkResult {
   // Warmup
@@ -221,7 +180,6 @@ async function main(): Promise<void> {
   
   const testDir = path.join(__dirname, '..', '..', 'test');
   const decoder = new GlintDecoder();
-  const profiledDecoder = new ProfiledGlintDecoder();
   
   // Test datasets
   const datasets = [
@@ -249,9 +207,19 @@ async function main(): Promise<void> {
     
     try {
       console.log(`\nBenchmark${dataset.name.padEnd(8)} `);
-      process.stdout.write(`  Glint: `);
-      const glintResult = runBenchmark(`Glint-${dataset.name}`, glintData, decoder, 2000);
-      console.log(` ${glintResult.iterations.toLocaleString()} iterations (${glintResult.totalMs.toFixed(0)}ms)`);
+      
+      // Test if Glint decoding works first
+      let glintResult;
+      try {
+        decoder.decode(glintData);
+        process.stdout.write(`  Glint: `);
+        glintResult = runBenchmark(`Glint-${dataset.name}`, glintData, decoder, 2000);
+        console.log(` ${glintResult.iterations.toLocaleString()} iterations (${glintResult.totalMs.toFixed(0)}ms)`);
+      } catch (decodeError) {
+        console.log(`  Glint: ❌ Decode error - ${(decodeError as Error).message}`);
+        results.push({ dataset: dataset.name, error: `Glint decode error: ${(decodeError as Error).message}` });
+        continue;
+      }
       
       process.stdout.write(`  JSON:  `);
       const jsonResult = runBenchmark(`JSON-${dataset.name}`, jsonData, null, 2000);
@@ -310,55 +278,6 @@ async function main(): Promise<void> {
       `Size diff: ${sizeRatio > 0 ? '+' : ''}${sizeRatio.toFixed(1)}%`
     );
     console.log('─'.repeat(80));
-  }
-  
-  // Profile simple dataset to show what's slow
-  console.log('\n🔍 Performance Profile (Simple Dataset)');
-  console.log('━'.repeat(80));
-  
-  const profiler = new PerformanceProfiler();
-  profiledDecoder.setProfiler(profiler);
-  
-  const simpleData = new Uint8Array(fs.readFileSync(path.join(testDir, 'simple.glint')));
-  
-  console.log('Running performance profile...');
-  profiler.start();
-  
-  // Run for 2 seconds with progress updates
-  const targetTime = 2000; // 2 seconds
-  const start = process.hrtime.bigint();
-  let iterations = 0;
-  let lastUpdate = 0;
-  
-  while (true) {
-    profiledDecoder.decode(simpleData);
-    iterations++;
-    
-    if (iterations % 10000 === 0) {
-      const elapsed = Number(process.hrtime.bigint() - start) / 1000000;
-      
-      // Show progress every 1000ms
-      if (elapsed - lastUpdate > 1000) {
-        process.stdout.write(`${iterations.toLocaleString()}-`);
-        lastUpdate = elapsed;
-      }
-      
-      if (elapsed > targetTime) break;
-    }
-  }
-  
-  console.log(`\nCompleted ${iterations.toLocaleString()} iterations for profiling`);
-  const timings = profiler.getResults();
-  console.log('Operation                Count      Avg Time    Total %');
-  console.log('─'.repeat(80));
-  
-  for (const timing of timings.slice(0, 10)) {
-    console.log(
-      `${timing.operation.padEnd(24)} ` +
-      `${timing.count.toString().padStart(6)} ` +
-      `${formatTime(timing.avgNs).padStart(12)} ` +
-      `${timing.percentage.toFixed(1).padStart(8)}%`
-    );
   }
   
   // Cache statistics
