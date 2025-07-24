@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -106,12 +108,15 @@ start:
 // there is a tipping point where this becomes less effective than a
 // simple string map - see `smallThresh` for that threshold
 type DecodeInstructionLookup struct {
+	mu    sync.RWMutex
 	Added func(hash uint, contextID uint) // a callback to be told when an item has been added to the lookup along with a context ID
 	root  dtrienode
 }
 
 // add appends the supplied field into the trie against name
 func (t *DecodeInstructionLookup) add(hash []byte, field []decodeInstruction, id uint) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	node := &t.root
 
@@ -137,6 +142,9 @@ func (t *DecodeInstructionLookup) add(hash []byte, field []decodeInstruction, id
 
 // get performs the lookup on the supplied hash
 func (t *DecodeInstructionLookup) get(hash []byte) ([]decodeInstruction, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	node := &t.root
 	var i int
 start:
@@ -276,7 +284,7 @@ func (d *decoderImpl) UnmarshalWithContext(bytes []byte, s any, context DecoderC
 	schema := NewReader(r.Read(uint(r.ReadVarint())))
 	body := NewReader(r.Remaining())
 
-	d.lastHash = binary.LittleEndian.Uint32(hash)
+	atomic.StoreUint32(&d.lastHash, binary.LittleEndian.Uint32(hash))
 
 	var err error
 	var instructions []decodeInstruction // the full list of instructions needed to decode the given schema, including skips
