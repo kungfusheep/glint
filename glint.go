@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -271,7 +272,8 @@ func (t TrustHeader) Value() string {
 // NewTrustHeader creates an HTTP header for schema trust negotiation.
 // Use with NewBufferWithTrust to skip schema transmission when both sides have matching schemas.
 func NewTrustHeader(d *decoderImpl) TrustHeader {
-	return TrustHeader{"X-Glint-Trust", strconv.FormatUint(uint64(d.lastHash), 10)}
+	lastHash := atomic.LoadUint32(&d.lastHash)
+	return TrustHeader{"X-Glint-Trust", strconv.FormatUint(uint64(lastHash), 10)}
 }
 
 // deref creates a wrapper that dereferences pointers and handles nil checks.
