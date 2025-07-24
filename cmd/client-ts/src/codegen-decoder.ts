@@ -30,8 +30,7 @@ function extractVarint(data, pos) {
     shift += 7;
   }
   
-  // Ensure unsigned result for values that might overflow signed 32-bit
-  return { value: value >>> 0, bytes };
+  return { value, bytes };
 }
 
 // Extract varint with BigInt precision for Float64 values
@@ -110,7 +109,6 @@ export class CodegenGlintDecoder {
       const schema = this.compileSchema(data, 5 + schemaSize.bytes, schemaSize.value, crc32);
       const code = this.generateDecoderCode(schema);
       
-      
       // Create the decoder function
       decoderFn = new Function('data', 'startPos', 'textDecoder', 'limits', 
         HELPERS + '\n\n' + code
@@ -170,9 +168,6 @@ export class CodegenGlintDecoder {
     code += `${indent}{\n`;
     code += `${indent}  const len = extractVarint(data, pos);\n`;
     code += `${indent}  pos += len.bytes;\n`;
-    code += `${indent}  if (len.value < 0 || len.value > limits.maxArrayLength) {\n`;
-    code += `${indent}    throw new Error(\`Invalid array length \${len.value} for field ${field.name}\`);\n`;
-    code += `${indent}  }\n`;
     code += `${indent}  const arr = new Array(len.value);\n`;
     code += `${indent}  \n`;
     code += `${indent}  for (let i = 0; i < len.value; i++) {\n`;
@@ -318,27 +313,22 @@ export class CodegenGlintDecoder {
         code += `${indent}pos++;\n`;
         break;
         
-      case 4: // Int16 (zigzag varint - matches Go WireInt16)
+      case 4: // Int16
+        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}if (${target} >= 32768) ${target} -= 65536;\n`;
+        code += `${indent}pos += 2;\n`;
+        break;
+        
+      case 5: // Int32
+        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}pos += 4;\n`;
+        break;
+        
+      case 6: // Int64 (zigzag varint)
         code += `${indent}{\n`;
         code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  ${target} = (v.value >>> 1) ^ (-(v.value & 1));\n`;
-        code += `${indent}}\n`;
-        break;
-        
-      case 5: // Int32 (zigzag varint - matches Go WireInt32)
-        code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  ${target} = (v.value >>> 1) ^ (-(v.value & 1));\n`;
-        code += `${indent}}\n`;
-        break;
-        
-      case 6: // Int64 (direct varint - matches Go, no zigzag)
-        code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  ${target} = v.value >= (1n << 63n) ? Number(v.value - (1n << 64n)) : Number(v.value);\n`;
+        code += `${indent}  ${target} = zigzagDecode(v.value);\n`;
         code += `${indent}}\n`;
         break;
         
@@ -346,15 +336,17 @@ export class CodegenGlintDecoder {
         code += `${indent}${target} = data[pos++];\n`;
         break;
         
-      case 9: // Uint16 (varint - matches Go WireUint16)
-        code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  ${target} = v.value & 0xFFFF;\n`;
-        code += `${indent}}\n`;
+      case 9: // Uint16
+        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}pos += 2;\n`;
         break;
         
-      case 10: // Uint32 (varint - matches Go WireUint32)
+      case 10: // Uint32
+        code += `${indent}${target} = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}pos += 4;\n`;
+        break;
+        
+      case 11: // Uint64 (varint)
         code += `${indent}{\n`;
         code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
@@ -362,22 +354,11 @@ export class CodegenGlintDecoder {
         code += `${indent}}\n`;
         break;
         
-      case 11: // Uint64 (varint BigInt - handles large values)
+      case 12: // Float32
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  ${target} = Number(v.value);\n`;
-        code += `${indent}}\n`;
-        break;
-        
-      case 12: // Float32 (varint-encoded IEEE 754 bits - matches Go)
-        code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const buffer = new ArrayBuffer(4);\n`;
-        code += `${indent}  const view = new DataView(buffer);\n`;
-        code += `${indent}  view.setUint32(0, v.value, true);\n`;
+        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
         code += `${indent}  ${target} = view.getFloat32(0, true);\n`;
+        code += `${indent}  pos += 4;\n`;
         code += `${indent}}\n`;
         break;
         
@@ -505,27 +486,27 @@ export class CodegenGlintDecoder {
         code += `${indent}pos++;\n`;
         break;
         
-      case 4: // Int16 (zigzag varint - matches Go WireInt16)
+      case 4: // Int16
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const ${varName} = (v.value >>> 1) ^ (-(v.value & 1));\n`;
+        code += `${indent}  let val = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}  if (val >= 32768) val -= 65536;\n`;
+        code += `${indent}  const ${varName} = val;\n`;
+        code += `${indent}  pos += 2;\n`;
         code += `${indent}}\n`;
         break;
         
-      case 5: // Int32 (zigzag varint - matches Go WireInt32)
+      case 5: // Int32
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const ${varName} = (v.value >>> 1) ^ (-(v.value & 1));\n`;
+        code += `${indent}  const ${varName} = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}  pos += 4;\n`;
         code += `${indent}}\n`;
         break;
         
-      case 6: // Int64 (direct varint - matches Go, no zigzag)
+      case 6: // Int64 (zigzag varint)
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const ${varName} = v.value >= (1n << 63n) ? Number(v.value - (1n << 64n)) : Number(v.value);\n`;
+        code += `${indent}  const ${varName} = zigzagDecode(v.value);\n`;
         code += `${indent}}\n`;
         break;
         
@@ -533,15 +514,21 @@ export class CodegenGlintDecoder {
         code += `${indent}const ${varName} = data[pos++];\n`;
         break;
         
-      case 9: // Uint16 (varint - matches Go WireUint16)
+      case 9: // Uint16
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const ${varName} = v.value & 0xFFFF;\n`;
+        code += `${indent}  const ${varName} = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}  pos += 2;\n`;
         code += `${indent}}\n`;
         break;
         
-      case 10: // Uint32 (varint - matches Go WireUint32)
+      case 10: // Uint32
+        code += `${indent}{\n`;
+        code += `${indent}  const ${varName} = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
+        break;
+        
+      case 11: // Uint64 (varint)
         code += `${indent}{\n`;
         code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
@@ -549,22 +536,11 @@ export class CodegenGlintDecoder {
         code += `${indent}}\n`;
         break;
         
-      case 11: // Uint64 (varint BigInt - handles large values)
+      case 12: // Float32
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const ${varName} = Number(v.value);\n`;
-        code += `${indent}}\n`;
-        break;
-        
-      case 12: // Float32 (varint-encoded IEEE 754 bits - matches Go)
-        code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarint(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  const buffer = new ArrayBuffer(4);\n`;
-        code += `${indent}  const view = new DataView(buffer);\n`;
-        code += `${indent}  view.setUint32(0, v.value, true);\n`;
+        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
         code += `${indent}  const ${varName} = view.getFloat32(0, true);\n`;
+        code += `${indent}  pos += 4;\n`;
         code += `${indent}}\n`;
         break;
         
@@ -642,63 +618,63 @@ export class CodegenGlintDecoder {
         code += `${indent}pos++;\n`;
         break;
         
-      case 4: // Int16 (zigzag varint - matches Go WireInt16)
-        code += `${indent}const v_int16 = extractVarint(data, pos);\n`;
-        code += `${indent}pos += v_int16.bytes;\n`;
-        code += `${indent}const value = (v_int16.value >>> 1) ^ (-(v_int16.value & 1));\n`;
+      case 4: // Int16
+        code += `${indent}{\n`;
+        code += `${indent}  let val = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}  if (val >= 32768) val -= 65536;\n`;
+        code += `${indent}  const value = val;\n`;
+        code += `${indent}  pos += 2;\n`;
+        code += `${indent}}\n`;
         break;
         
-      case 5: // Int32 (zigzag varint - matches Go WireInt32)
-        code += `${indent}const v_int32 = extractVarint(data, pos);\n`;
-        code += `${indent}pos += v_int32.bytes;\n`;
-        code += `${indent}const value = (v_int32.value >>> 1) ^ (-(v_int32.value & 1));\n`;
+      case 5: // Int32
+        code += `${indent}const value = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}pos += 4;\n`;
         break;
         
-      case 6: // Int64 (direct varint - matches Go, no zigzag)
-        code += `${indent}const v_int64 = extractVarintBig(data, pos);\n`;
-        code += `${indent}pos += v_int64.bytes;\n`;
-        code += `${indent}// Convert uint64 -> int64 (handle negative numbers)\n`;
-        code += `${indent}const value = v_int64.value >= (1n << 63n) ? Number(v_int64.value - (1n << 64n)) : Number(v_int64.value);\n`;
+      case 6: // Int64 (zigzag varint)
+        code += `${indent}const v = extractVarint(data, pos);\n`;
+        code += `${indent}pos += v.bytes;\n`;
+        code += `${indent}const value = zigzagDecode(v.value);\n`;
         break;
         
       case 8: // Uint8
         code += `${indent}const value = data[pos++];\n`;
         break;
         
-      case 9: // Uint16 (varint - matches Go WireUint16)
-        code += `${indent}const v_uint16 = extractVarint(data, pos);\n`;
-        code += `${indent}pos += v_uint16.bytes;\n`;
-        code += `${indent}const value = v_uint16.value & 0xFFFF;\n`;
+      case 9: // Uint16
+        code += `${indent}const value = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}pos += 2;\n`;
         break;
         
-      case 10: // Uint32 (varint - matches Go WireUint32)
-        code += `${indent}const v_uint32 = extractVarint(data, pos);\n`;
-        code += `${indent}pos += v_uint32.bytes;\n`;
-        code += `${indent}const value = v_uint32.value;\n`;
+      case 10: // Uint32
+        code += `${indent}const value = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}pos += 4;\n`;
         break;
         
-      case 11: // Uint64 (varint BigInt - handles large values)
-        code += `${indent}const v_uint64 = extractVarintBig(data, pos);\n`;
-        code += `${indent}pos += v_uint64.bytes;\n`;
-        code += `${indent}const value = Number(v_uint64.value);\n`;
+      case 11: // Uint64 (varint)
+        code += `${indent}const v = extractVarint(data, pos);\n`;
+        code += `${indent}pos += v.bytes;\n`;
+        code += `${indent}const value = v.value;\n`;
         break;
         
-      case 12: // Float32 (varint-encoded IEEE 754 bits - matches Go)
-        code += `${indent}const v_f32 = extractVarint(data, pos);\n`;
-        code += `${indent}pos += v_f32.bytes;\n`;
-        code += `${indent}const buffer_f32 = new ArrayBuffer(4);\n`;
-        code += `${indent}const view_f32 = new DataView(buffer_f32);\n`;
-        code += `${indent}view_f32.setUint32(0, v_f32.value, true);\n`;
-        code += `${indent}const value = view_f32.getFloat32(0, true);\n`;
+      case 12: // Float32
+        code += `${indent}{\n`;
+        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
+        code += `${indent}  const value = view.getFloat32(0, true);\n`;
+        code += `${indent}  pos += 4;\n`;
+        code += `${indent}}\n`;
         break;
         
       case 13: // Float64
-        code += `${indent}const v_f64 = extractVarintBig(data, pos);\n`;
-        code += `${indent}pos += v_f64.bytes;\n`;
-        code += `${indent}const buffer_f64 = new ArrayBuffer(8);\n`;
-        code += `${indent}const view_f64 = new DataView(buffer_f64);\n`;
-        code += `${indent}view_f64.setBigUint64(0, v_f64.value, true);\n`;
-        code += `${indent}const value = view_f64.getFloat64(0, true);\n`;
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarintBig(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const buffer = new ArrayBuffer(8);\n`;
+        code += `${indent}  const view = new DataView(buffer);\n`;
+        code += `${indent}  view.setBigUint64(0, v.value, true);\n`;
+        code += `${indent}  const value = view.getFloat64(0, true);\n`;
+        code += `${indent}}\n`;
         break;
         
       case 14: // String
@@ -718,17 +694,21 @@ export class CodegenGlintDecoder {
         break;
         
       case 15: // Bytes ([]byte)
-        code += `${indent}const len_bytes = extractVarint(data, pos);\n`;
-        code += `${indent}pos += len_bytes.bytes;\n`;
-        code += `${indent}const value = data.slice(pos, pos + len_bytes.value);\n`;
-        code += `${indent}pos += len_bytes.value;\n`;
+        code += `${indent}{\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += len.bytes;\n`;
+        code += `${indent}  const value = data.slice(pos, pos + len.value);\n`;
+        code += `${indent}  pos += len.value;\n`;
+        code += `${indent}}\n`;
         break;
         
       case 18: // Time
-        code += `${indent}const v_time = extractVarint(data, pos);\n`;
-        code += `${indent}pos += v_time.bytes;\n`;
-        code += `${indent}const nanos = zigzagDecode(v_time.value);\n`;
-        code += `${indent}const value = new Date(nanos / 1000000);\n`;
+        code += `${indent}{\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
+        code += `${indent}  pos += v.bytes;\n`;
+        code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
+        code += `${indent}  const value = new Date(nanos / 1000000);\n`;
+        code += `${indent}}\n`;
         break;
         
       case 16: // Struct - this should be handled by caller
