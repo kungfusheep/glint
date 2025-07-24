@@ -142,8 +142,8 @@ func (t *DecodeInstructionLookup) add(hash []byte, field []decodeInstruction, id
 
 // get performs the lookup on the supplied hash
 func (t *DecodeInstructionLookup) get(hash []byte) ([]decodeInstruction, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	node := &t.root
 	var i int
