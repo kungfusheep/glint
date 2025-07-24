@@ -96,8 +96,18 @@ function extractVarintFast(data, pos) {
   const b1 = data[pos + 1];
   if (b1 < 0x80) return { value: (b0 & 0x7f) | (b1 << 7), bytes: 2 };
   
+  const b2 = data[pos + 2];
+  if (b2 < 0x80) return { value: (b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), bytes: 3 };
+  
   // Fall back to full extraction for larger values
   return extractVarint(data, pos);
+}
+
+// Ultra-fast inline varint for single byte (most common case)
+// Returns -1 if not single byte to check with simple if
+function varintByte(data, pos) {
+  const b = data[pos];
+  return b < 0x80 ? b : -1;
 }
 `;
 
@@ -133,8 +143,9 @@ export class CodegenGlintDecoder {
       throw new GlintError('Invalid Glint document: too short');
     }
 
-    // Extract header
-    const crc32 = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+    // Extract header using DataView for better performance
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const crc32 = view.getUint32(1, true);
     const schemaSize = this.extractVarint(data, 5);
     const dataStartPos = 5 + schemaSize.bytes + schemaSize.value;
     
@@ -149,8 +160,8 @@ export class CodegenGlintDecoder {
       const schema = this.compileSchema(data, 5 + schemaSize.bytes, schemaSize.value, crc32);
       const code = this.generateDecoderCode(schema);
       
-      // Create the decoder function
-      decoderFn = new Function('data', 'startPos', 'textDecoder', 'limits', 
+      // Create the decoder function with DataView
+      decoderFn = new Function('data', 'view', 'startPos', 'textDecoder', 'limits', 
         HELPERS + '\n\n' + code
       );
       
@@ -159,8 +170,8 @@ export class CodegenGlintDecoder {
       this.stats.hits++;
     }
     
-    // Execute the generated decoder
-    return decoderFn(data, dataStartPos, this.textDecoder, this.limits);
+    // Execute the generated decoder with DataView
+    return decoderFn(data, view, dataStartPos, this.textDecoder, this.limits);
   }
 
   /**
@@ -168,7 +179,16 @@ export class CodegenGlintDecoder {
    */
   private generateDecoderCode(schema: CachedSchema): string {
     let code = 'let pos = startPos;\n';
-    code += 'const result = {};\n\n';
+    
+    // Pre-declare object with all properties for hidden class optimization
+    code += 'const result = {\n';
+    for (let i = 0; i < schema.fields.length; i++) {
+      const field = schema.fields[i];
+      code += `  ${field.name}: undefined`;
+      if (i < schema.fields.length - 1) code += ',';
+      code += '\n';
+    }
+    code += '};\n\n';
     
     // Generate code for each field
     for (const field of schema.fields) {
@@ -208,21 +228,51 @@ export class CodegenGlintDecoder {
     code += `${indent}{\n`;
     code += `${indent}  const len = extractVarintFast(data, pos);\n`;
     code += `${indent}  pos += len.bytes;\n`;
-    code += `${indent}  const arr = new Array(len.value);\n`;
-    code += `${indent}  \n`;
-    code += `${indent}  for (let i = 0; i < len.value; i++) {\n`;
     
-    if (field.baseType === 16 && field.subSchema) {
-      // Generate inline struct decoding
-      code += this.generateInlineStructCode(field.subSchema, indent + '    ', `item_${field.name}`);
-      code += `${indent}    arr[i] = item_${field.name};\n`;
+    // Optimize for small arrays (common case)
+    if (field.baseType === 14) { // String array
+      code += `${indent}  const arr = new Array(len.value);\n`;
+      code += `${indent}  if (len.value === 3) {\n`;
+      code += `${indent}    // Unrolled loop for common case (tags)\n`;
+      // Unroll for 3 elements
+      for (let i = 0; i < 3; i++) {
+        code += `${indent}    {\n`;
+        code += `${indent}      const b0 = data[pos];\n`;
+        code += `${indent}      let slen;\n`;
+        code += `${indent}      if (b0 < 0x80) { slen = b0; pos++; } else {\n`;
+        code += `${indent}        const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}        slen = v.value; pos += v.bytes;\n`;
+        code += `${indent}      }\n`;
+        code += `${indent}      arr[${i}] = slen <= 32 ? decodeASCII(data, pos, slen) : textDecoder.decode(data.subarray(pos, pos + slen));\n`;
+        code += `${indent}      pos += slen;\n`;
+        code += `${indent}    }\n`;
+      }
+      code += `${indent}  } else {\n`;
+      code += `${indent}    // General case\n`;
+      code += `${indent}    for (let i = 0; i < len.value; i++) {\n`;
+      code += this.generateInlineValueCode(field.baseType, indent + '      ');
+      code += `${indent}      arr[i] = value;\n`;
+      code += `${indent}    }\n`;
+      code += `${indent}  }\n`;
     } else {
-      // Generate inline primitive decoding
-      code += this.generateInlineValueCode(field.baseType, indent + '    ');
-      code += `${indent}    arr[i] = value;\n`;
+      // Original code for non-string arrays
+      code += `${indent}  const arr = new Array(len.value);\n`;
+      code += `${indent}  \n`;
+      code += `${indent}  for (let i = 0; i < len.value; i++) {\n`;
+      
+      if (field.baseType === 16 && field.subSchema) {
+        // Generate inline struct decoding
+        code += this.generateInlineStructCode(field.subSchema, indent + '    ', `item_${field.name}`);
+        code += `${indent}    arr[i] = item_${field.name};\n`;
+      } else {
+        // Generate inline primitive decoding
+        code += this.generateInlineValueCode(field.baseType, indent + '    ');
+        code += `${indent}    arr[i] = value;\n`;
+      }
+      
+      code += `${indent}  }\n`;
     }
     
-    code += `${indent}  }\n`;
     code += `${indent}  \n`;
     code += `${indent}  result.${field.name} = arr;\n`;
     code += `${indent}}\n`;
@@ -249,9 +299,25 @@ export class CodegenGlintDecoder {
     
     // Don't redeclare if it's a nested property assignment
     if (varName.includes('.')) {
-      code += `${indent}${varName} = {};\n`;
+      // Pre-declare with all properties for hidden class optimization
+      code += `${indent}${varName} = {\n`;
+      for (let i = 0; i < schema.fields.length; i++) {
+        const field = schema.fields[i];
+        code += `${indent}  ${field.name}: undefined`;
+        if (i < schema.fields.length - 1) code += ',';
+        code += '\n';
+      }
+      code += `${indent}};\n`;
     } else {
-      code += `${indent}const ${varName} = {};\n`;
+      // Pre-declare with all properties for hidden class optimization
+      code += `${indent}const ${varName} = {\n`;
+      for (let i = 0; i < schema.fields.length; i++) {
+        const field = schema.fields[i];
+        code += `${indent}  ${field.name}: undefined`;
+        if (i < schema.fields.length - 1) code += ',';
+        code += '\n';
+      }
+      code += `${indent}};\n`;
     }
     
     for (const field of schema.fields) {
@@ -324,11 +390,7 @@ export class CodegenGlintDecoder {
         break;
         
       case 2: // Int (zigzag)
-        code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
-        code += `${indent}  pos += v.bytes;\n`;
-        code += `${indent}  ${target} = zigzagDecode(v.value);\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const v${field.name} = extractVarintFast(data, pos); pos += v${field.name}.bytes; ${target} = zigzagDecode(v${field.name}.value);\n`;
         break;
         
       case 7: // Uint
@@ -345,14 +407,11 @@ export class CodegenGlintDecoder {
         break;
         
       case 4: // Int16
-        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8);\n`;
-        code += `${indent}if (${target} >= 32768) ${target} -= 65536;\n`;
-        code += `${indent}pos += 2;\n`;
+        code += `${indent}${target} = view.getInt16(pos, true); pos += 2;\n`;
         break;
         
       case 5: // Int32
-        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
-        code += `${indent}pos += 4;\n`;
+        code += `${indent}${target} = view.getInt32(pos, true); pos += 4;\n`;
         break;
         
       case 6: // Int64 (zigzag varint)
@@ -368,13 +427,11 @@ export class CodegenGlintDecoder {
         break;
         
       case 9: // Uint16
-        code += `${indent}${target} = data[pos] | (data[pos + 1] << 8);\n`;
-        code += `${indent}pos += 2;\n`;
+        code += `${indent}${target} = view.getUint16(pos, true); pos += 2;\n`;
         break;
         
       case 10: // Uint32
-        code += `${indent}${target} = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
-        code += `${indent}pos += 4;\n`;
+        code += `${indent}${target} = view.getUint32(pos, true); pos += 4;\n`;
         break;
         
       case 11: // Uint64 (varint)
@@ -386,11 +443,7 @@ export class CodegenGlintDecoder {
         break;
         
       case 12: // Float32
-        code += `${indent}{\n`;
-        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
-        code += `${indent}  ${target} = view.getFloat32(0, true);\n`;
-        code += `${indent}  pos += 4;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}${target} = view.getFloat32(pos, true); pos += 4;\n`;
         break;
         
       case 13: // Float64
@@ -408,16 +461,19 @@ export class CodegenGlintDecoder {
         
       case 14: // String
         code += `${indent}{\n`;
-        code += `${indent}  const len = extractVarintFast(data, pos);\n`;
-        code += `${indent}  pos += len.bytes;\n`;
-        code += `${indent}  if (len.value <= 32) {\n`;
-        code += `${indent}    // Fast path for short strings (likely ASCII)\n`;
-        code += `${indent}    ${target} = decodeASCII(data, pos, len.value);\n`;
-        code += `${indent}    pos += len.value;\n`;
+        code += `${indent}  // Inline varint extraction for string length\n`;
+        code += `${indent}  const b0 = data[pos];\n`;
+        code += `${indent}  let len;\n`;
+        code += `${indent}  if (b0 < 0x80) {\n`;
+        code += `${indent}    len = b0;\n`;
+        code += `${indent}    pos++;\n`;
         code += `${indent}  } else {\n`;
-        code += `${indent}    ${target} = textDecoder.decode(data.subarray(pos, pos + len.value));\n`;
-        code += `${indent}    pos += len.value;\n`;
+        code += `${indent}    const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}    len = v.value;\n`;
+        code += `${indent}    pos += v.bytes;\n`;
         code += `${indent}  }\n`;
+        code += `${indent}  ${target} = len <= 32 ? decodeASCII(data, pos, len) : textDecoder.decode(data.subarray(pos, pos + len));\n`;
+        code += `${indent}  pos += len;\n`;
         code += `${indent}}\n`;
         break;
         
@@ -515,19 +571,13 @@ export class CodegenGlintDecoder {
         break;
         
       case 4: // Int16
-        code += `${indent}{\n`;
-        code += `${indent}  let val = data[pos] | (data[pos + 1] << 8);\n`;
-        code += `${indent}  if (val >= 32768) val -= 65536;\n`;
-        code += `${indent}  const ${varName} = val;\n`;
-        code += `${indent}  pos += 2;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const ${varName} = view.getInt16(pos, true);\n`;
+        code += `${indent}pos += 2;\n`;
         break;
         
       case 5: // Int32
-        code += `${indent}{\n`;
-        code += `${indent}  const ${varName} = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
-        code += `${indent}  pos += 4;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const ${varName} = view.getInt32(pos, true);\n`;
+        code += `${indent}pos += 4;\n`;
         break;
         
       case 6: // Int64 (zigzag varint)
@@ -543,17 +593,13 @@ export class CodegenGlintDecoder {
         break;
         
       case 9: // Uint16
-        code += `${indent}{\n`;
-        code += `${indent}  const ${varName} = data[pos] | (data[pos + 1] << 8);\n`;
-        code += `${indent}  pos += 2;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const ${varName} = view.getUint16(pos, true);\n`;
+        code += `${indent}pos += 2;\n`;
         break;
         
       case 10: // Uint32
-        code += `${indent}{\n`;
-        code += `${indent}  const ${varName} = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
-        code += `${indent}  pos += 4;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const ${varName} = view.getUint32(pos, true);\n`;
+        code += `${indent}pos += 4;\n`;
         break;
         
       case 11: // Uint64 (varint)
@@ -565,11 +611,8 @@ export class CodegenGlintDecoder {
         break;
         
       case 12: // Float32
-        code += `${indent}{\n`;
-        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
-        code += `${indent}  const ${varName} = view.getFloat32(0, true);\n`;
-        code += `${indent}  pos += 4;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const ${varName} = view.getFloat32(pos, true);\n`;
+        code += `${indent}pos += 4;\n`;
         break;
         
       case 13: // Float64
@@ -630,13 +673,13 @@ export class CodegenGlintDecoder {
         break;
         
       case 2: // Int (zigzag)
-        code += `${indent}const v = extractVarint(data, pos);\n`;
+        code += `${indent}const v = extractVarintFast(data, pos);\n`;
         code += `${indent}pos += v.bytes;\n`;
         code += `${indent}const value = zigzagDecode(v.value);\n`;
         break;
         
       case 7: // Uint
-        code += `${indent}const v = extractVarint(data, pos);\n`;
+        code += `${indent}const v = extractVarintFast(data, pos);\n`;
         code += `${indent}pos += v.bytes;\n`;
         code += `${indent}const value = v.value;\n`;
         break;
@@ -647,16 +690,12 @@ export class CodegenGlintDecoder {
         break;
         
       case 4: // Int16
-        code += `${indent}{\n`;
-        code += `${indent}  let val = data[pos] | (data[pos + 1] << 8);\n`;
-        code += `${indent}  if (val >= 32768) val -= 65536;\n`;
-        code += `${indent}  const value = val;\n`;
-        code += `${indent}  pos += 2;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const value = view.getInt16(pos, true);\n`;
+        code += `${indent}pos += 2;\n`;
         break;
         
       case 5: // Int32
-        code += `${indent}const value = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);\n`;
+        code += `${indent}const value = view.getInt32(pos, true);\n`;
         code += `${indent}pos += 4;\n`;
         break;
         
@@ -671,12 +710,12 @@ export class CodegenGlintDecoder {
         break;
         
       case 9: // Uint16
-        code += `${indent}const value = data[pos] | (data[pos + 1] << 8);\n`;
+        code += `${indent}const value = view.getUint16(pos, true);\n`;
         code += `${indent}pos += 2;\n`;
         break;
         
       case 10: // Uint32
-        code += `${indent}const value = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24)) >>> 0;\n`;
+        code += `${indent}const value = view.getUint32(pos, true);\n`;
         code += `${indent}pos += 4;\n`;
         break;
         
@@ -687,11 +726,8 @@ export class CodegenGlintDecoder {
         break;
         
       case 12: // Float32
-        code += `${indent}{\n`;
-        code += `${indent}  const view = new DataView(data.buffer, data.byteOffset + pos, 4);\n`;
-        code += `${indent}  const value = view.getFloat32(0, true);\n`;
-        code += `${indent}  pos += 4;\n`;
-        code += `${indent}}\n`;
+        code += `${indent}const value = view.getFloat32(pos, true);\n`;
+        code += `${indent}pos += 4;\n`;
         break;
         
       case 13: // Float64
