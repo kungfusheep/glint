@@ -3,19 +3,19 @@
  * Zero-dependency decoder for Glint binary format
  */
 
-export { GlintDecoder } from './decoder';
+export { CodegenGlintDecoder as GlintDecoder } from './decoder';
 export { BinaryReader } from './reader';
 export * from './wire-types';
 export * from './types';
 
-import { GlintDecoder } from './decoder';
+import { CodegenGlintDecoder } from './decoder';
 import { DecoderOptions, DecodedObject } from './types';
 
 /**
  * Convenience function to decode Glint data (uses optimized decoder)
  */
 export function decode(data: Uint8Array, options?: DecoderOptions): DecodedObject {
-  const decoder = new GlintDecoder(options);
+  const decoder = new CodegenGlintDecoder(options);
   return decoder.decode(data);
 }
 

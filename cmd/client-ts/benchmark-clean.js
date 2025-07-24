@@ -1,6 +1,6 @@
 const fs = require('fs');
 const zlib = require('zlib');
-const { CodegenGlintDecoder } = require('./dist/src/codegen-decoder');
+const { CodegenGlintDecoder } = require('./dist/src/decoder');
 
 // Load test data - using JSON files for direct comparison
 const mediumData = fs.readFileSync('./test/benchmark-medium.glint');

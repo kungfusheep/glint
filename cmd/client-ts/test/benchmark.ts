@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { GlintDecoder } from '../src/decoder';
+import { CodegenGlintDecoder as GlintDecoder } from '../src/decoder';
 
 interface BenchmarkResult {
   name: string;

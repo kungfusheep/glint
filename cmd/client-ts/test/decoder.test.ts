@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { BinaryReader } from '../src/reader';
-import { GlintDecoder } from '../src/decoder';
+import { CodegenGlintDecoder as GlintDecoder } from '../src/decoder';
 import { WireType } from '../src/wire-types';
 
 // Test helpers

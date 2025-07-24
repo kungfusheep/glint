@@ -4,7 +4,7 @@
 
 import * as assert from 'assert';
 import { BinaryReader } from '../src/reader';
-import { GlintDecoder } from '../src/decoder';
+import { CodegenGlintDecoder as GlintDecoder } from '../src/decoder';
 
 function runGoPortedTests() {
   console.log('Running Go-ported tests...\n');

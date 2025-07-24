@@ -5,7 +5,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { GlintDecoder } from '../src/decoder';
+import { CodegenGlintDecoder as GlintDecoder } from '../src/decoder';
 
 function loadTestFile(filename: string): Uint8Array {
   // Look in the source test directory, not dist
