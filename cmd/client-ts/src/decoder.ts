@@ -11,6 +11,30 @@ const DECODER_CACHE = new Map<string, Function>();
 
 // Helper functions that will be available in generated code
 const HELPERS = `
+// StringView for lazy string decoding
+class StringView {
+  constructor(buffer, offset, length) {
+    this.buffer = buffer;
+    this.offset = offset;
+    this.byteLength = length;
+    this._cached = null;
+  }
+  
+  toString() {
+    if (!this._cached) {
+      this._cached = textDecoder.decode(
+        this.buffer.subarray(this.offset, this.offset + this.byteLength)
+      );
+    }
+    return this._cached;
+  }
+  
+  valueOf() { return this.toString(); }
+  toJSON() { return this.toString(); }
+  [Symbol.toPrimitive]() { return this.toString(); }
+  get length() { return this.byteLength; }
+}
+
 // Extract varint inline for maximum performance - supports up to 10 bytes for uint64
 function extractVarint(data, pos) {
   let value = 0;
@@ -88,20 +112,6 @@ function isASCII(data, pos, len) {
   return true;
 }
 
-// Optimized varint extraction for common small values
-function extractVarintFast(data, pos) {
-  const b0 = data[pos];
-  if (b0 < 0x80) return { value: b0, bytes: 1 };
-  
-  const b1 = data[pos + 1];
-  if (b1 < 0x80) return { value: (b0 & 0x7f) | (b1 << 7), bytes: 2 };
-  
-  const b2 = data[pos + 2];
-  if (b2 < 0x80) return { value: (b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14), bytes: 3 };
-  
-  // Fall back to full extraction for larger values
-  return extractVarint(data, pos);
-}
 
 // Ultra-fast inline varint for single byte (most common case)
 // Returns -1 if not single byte to check with simple if
@@ -226,7 +236,7 @@ export class CodegenGlintDecoder {
     let code = '';
     
     code += `${indent}{\n`;
-    code += `${indent}  const len = extractVarintFast(data, pos);\n`;
+    code += `${indent}  const len = extractVarint(data, pos);\n`;
     code += `${indent}  pos += len.bytes;\n`;
     
     // Optimize for small arrays (common case)
@@ -240,10 +250,10 @@ export class CodegenGlintDecoder {
         code += `${indent}      const b0 = data[pos];\n`;
         code += `${indent}      let slen;\n`;
         code += `${indent}      if (b0 < 0x80) { slen = b0; pos++; } else {\n`;
-        code += `${indent}        const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}        const v = extractVarint(data, pos);\n`;
         code += `${indent}        slen = v.value; pos += v.bytes;\n`;
         code += `${indent}      }\n`;
-        code += `${indent}      arr[${i}] = slen <= 32 ? decodeASCII(data, pos, slen) : textDecoder.decode(data.subarray(pos, pos + slen));\n`;
+        code += `${indent}      arr[${i}] = new StringView(data, pos, slen);\n`;
         code += `${indent}      pos += slen;\n`;
         code += `${indent}    }\n`;
       }
@@ -331,15 +341,15 @@ export class CodegenGlintDecoder {
         // Inline array handling
         code += `${indent}${field.isPointer ? '  ' : ''}{\n`;
         const innerIndent = indent + (field.isPointer ? '    ' : '  ');
-        code += `${innerIndent}const len = extractVarintFast(data, pos);\n`;
+        code += `${innerIndent}const len = extractVarint(data, pos);\n`;
         code += `${innerIndent}pos += len.bytes;\n`;
         code += `${innerIndent}const arr = new Array(len.value);\n`;
         code += `${innerIndent}for (let j = 0; j < len.value; j++) {\n`;
         
         if (field.baseType === 14) { // String array
-          code += `${innerIndent}  const strLen = extractVarintFast(data, pos);\n`;
+          code += `${innerIndent}  const strLen = extractVarint(data, pos);\n`;
           code += `${innerIndent}  pos += strLen.bytes;\n`;
-          code += `${innerIndent}  arr[j] = strLen.value <= 32 ? decodeASCII(data, pos, strLen.value) : textDecoder.decode(data.subarray(pos, pos + strLen.value));\n`;
+          code += `${innerIndent}  arr[j] = new StringView(data, pos, strLen.value);\n`;
           code += `${innerIndent}  pos += strLen.value;\n`;
         } else if (field.baseType === 16 && field.subSchema) {
           // Struct array - generate inline struct decoding
@@ -390,12 +400,12 @@ export class CodegenGlintDecoder {
         break;
         
       case 2: // Int (zigzag)
-        code += `${indent}const v${field.name} = extractVarintFast(data, pos); pos += v${field.name}.bytes; ${target} = zigzagDecode(v${field.name}.value);\n`;
+        code += `${indent}const v${field.name} = extractVarint(data, pos); pos += v${field.name}.bytes; ${target} = zigzagDecode(v${field.name}.value);\n`;
         break;
         
       case 7: // Uint
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  ${target} = v.value;\n`;
         code += `${indent}}\n`;
@@ -416,7 +426,7 @@ export class CodegenGlintDecoder {
         
       case 6: // Int64 (zigzag varint)
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  ${target} = zigzagDecode(v.value);\n`;
         code += `${indent}}\n`;
@@ -436,7 +446,7 @@ export class CodegenGlintDecoder {
         
       case 11: // Uint64 (varint)
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  ${target} = v.value;\n`;
         code += `${indent}}\n`;
@@ -468,18 +478,18 @@ export class CodegenGlintDecoder {
         code += `${indent}    len = b0;\n`;
         code += `${indent}    pos++;\n`;
         code += `${indent}  } else {\n`;
-        code += `${indent}    const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}    const v = extractVarint(data, pos);\n`;
         code += `${indent}    len = v.value;\n`;
         code += `${indent}    pos += v.bytes;\n`;
         code += `${indent}  }\n`;
-        code += `${indent}  ${target} = len <= 32 ? decodeASCII(data, pos, len) : textDecoder.decode(data.subarray(pos, pos + len));\n`;
+        code += `${indent}  ${target} = new StringView(data, pos, len);\n`;
         code += `${indent}  pos += len;\n`;
         code += `${indent}}\n`;
         break;
         
       case 15: // Bytes ([]byte)
         code += `${indent}{\n`;
-        code += `${indent}  const len = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
         code += `${indent}  pos += len.bytes;\n`;
         code += `${indent}  ${target} = data.slice(pos, pos + len.value);\n`;
         code += `${indent}  pos += len.value;\n`;
@@ -489,7 +499,7 @@ export class CodegenGlintDecoder {
       case 18: // Time
         code += `${indent}{\n`;
         code += `${indent}  // Time encoded as Unix nanoseconds (int64 zigzag varint)\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
         code += `${indent}  ${target} = new Date(nanos / 1000000);\n`;
@@ -551,7 +561,7 @@ export class CodegenGlintDecoder {
         
       case 2: // Int (zigzag)
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const ${varName} = zigzagDecode(v.value);\n`;
         code += `${indent}}\n`;
@@ -559,7 +569,7 @@ export class CodegenGlintDecoder {
         
       case 7: // Uint
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const ${varName} = v.value;\n`;
         code += `${indent}}\n`;
@@ -582,7 +592,7 @@ export class CodegenGlintDecoder {
         
       case 6: // Int64 (zigzag varint)
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const ${varName} = zigzagDecode(v.value);\n`;
         code += `${indent}}\n`;
@@ -604,7 +614,7 @@ export class CodegenGlintDecoder {
         
       case 11: // Uint64 (varint)
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const ${varName} = v.value;\n`;
         code += `${indent}}\n`;
@@ -628,16 +638,16 @@ export class CodegenGlintDecoder {
         
       case 14: // String
         code += `${indent}{\n`;
-        code += `${indent}  const len = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
         code += `${indent}  pos += len.bytes;\n`;
-        code += `${indent}  const ${varName} = len.value <= 32 ? decodeASCII(data, pos, len.value) : textDecoder.decode(data.subarray(pos, pos + len.value));\n`;
+        code += `${indent}  const ${varName} = new StringView(data, pos, len.value);\n`;
         code += `${indent}  pos += len.value;\n`;
         code += `${indent}}\n`;
         break;
         
       case 15: // Bytes ([]byte)
         code += `${indent}{\n`;
-        code += `${indent}  const len = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
         code += `${indent}  pos += len.bytes;\n`;
         code += `${indent}  const ${varName} = data.slice(pos, pos + len.value);\n`;
         code += `${indent}  pos += len.value;\n`;
@@ -646,7 +656,7 @@ export class CodegenGlintDecoder {
         
       case 18: // Time
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
         code += `${indent}  const ${varName} = new Date(nanos / 1000000);\n`;
@@ -673,13 +683,13 @@ export class CodegenGlintDecoder {
         break;
         
       case 2: // Int (zigzag)
-        code += `${indent}const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}const v = extractVarint(data, pos);\n`;
         code += `${indent}pos += v.bytes;\n`;
         code += `${indent}const value = zigzagDecode(v.value);\n`;
         break;
         
       case 7: // Uint
-        code += `${indent}const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}const v = extractVarint(data, pos);\n`;
         code += `${indent}pos += v.bytes;\n`;
         code += `${indent}const value = v.value;\n`;
         break;
@@ -742,15 +752,15 @@ export class CodegenGlintDecoder {
         break;
         
       case 14: // String
-        code += `${indent}const strLen = extractVarintFast(data, pos);\n`;
+        code += `${indent}const strLen = extractVarint(data, pos);\n`;
         code += `${indent}pos += strLen.bytes;\n`;
-        code += `${indent}const value = strLen.value <= 32 ? decodeASCII(data, pos, strLen.value) : textDecoder.decode(data.subarray(pos, pos + strLen.value));\n`;
+        code += `${indent}const value = new StringView(data, pos, strLen.value);\n`;
         code += `${indent}pos += strLen.value;\n`;
         break;
         
       case 15: // Bytes ([]byte)
         code += `${indent}{\n`;
-        code += `${indent}  const len = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const len = extractVarint(data, pos);\n`;
         code += `${indent}  pos += len.bytes;\n`;
         code += `${indent}  const value = data.slice(pos, pos + len.value);\n`;
         code += `${indent}  pos += len.value;\n`;
@@ -759,7 +769,7 @@ export class CodegenGlintDecoder {
         
       case 18: // Time
         code += `${indent}{\n`;
-        code += `${indent}  const v = extractVarintFast(data, pos);\n`;
+        code += `${indent}  const v = extractVarint(data, pos);\n`;
         code += `${indent}  pos += v.bytes;\n`;
         code += `${indent}  const nanos = zigzagDecode(v.value);\n`;
         code += `${indent}  const value = new Date(nanos / 1000000);\n`;
