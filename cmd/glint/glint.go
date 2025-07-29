@@ -111,7 +111,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		if err := inspectDocument(input); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -529,9 +529,14 @@ func printSchema(input []byte) error {
 		return fmt.Errorf("document too short")
 	}
 
+	// Parse the document to extract just the schema
+	reader := glint.NewReader(input)
+	doc := glint.NewPrinterDocument(&reader)
+	schema := glint.NewPrinterSchema(&doc.Schema)
+
 	fmt.Printf("Glint Schema\n")
-	// Use the glint Print function to show the schema
-	glint.Print(input)
+	glint.PrintSchema(&schema, 0)
+
 	return nil
 }
 
@@ -550,7 +555,7 @@ func analyzeDocument(doc []byte) {
 	// Calculate size breakdown
 	totalSize := len(doc)
 	headerSize := 5 // Fixed header size
-	
+
 	// Calculate schema size
 	schemaReader := glint.NewReader(doc[5:])
 	schemaLength := schemaReader.ReadVarint()
@@ -693,7 +698,7 @@ func convertDataToCSV(writer *csv.Writer, data map[string]interface{}) error {
 
 	// For object data, flatten it and write as rows
 	headers, rows := flattenData(data)
-	
+
 	// Write headers
 	if err := writer.Write(headers); err != nil {
 		return fmt.Errorf("error writing CSV headers: %v", err)
@@ -1103,7 +1108,7 @@ func generateGoStructFromDocument(input []byte, packageName, structName string) 
 	if err != nil {
 		return err
 	}
-	
+
 	fmt.Print(result)
 	return nil
 }
@@ -1157,7 +1162,7 @@ func checkSchemaCompatibility(oldData, newData []byte) error {
 	oldDoc := glint.NewPrinterDocument(&oldReader)
 	oldSchema := glint.NewPrinterSchema(&oldDoc.Schema)
 
-	// Parse new document  
+	// Parse new document
 	if len(newData) < 5 {
 		return fmt.Errorf("new document too short")
 	}
@@ -1201,16 +1206,16 @@ func checkSchemaCompatibility(oldData, newData []byte) error {
 type CompatibilityResult struct {
 	BackwardCompatible bool
 	ForwardCompatible  bool
-	Changes           []SchemaChange
+	Changes            []SchemaChange
 }
 
 // SchemaChange represents a single change between schemas
 type SchemaChange struct {
-	Type        string // "added", "removed", "type_changed"
-	FieldPath   string
-	OldType     string
-	NewType     string
-	Breaking    bool
+	Type      string // "added", "removed", "type_changed"
+	FieldPath string
+	OldType   string
+	NewType   string
+	Breaking  bool
 }
 
 func (c SchemaChange) Icon() string {
@@ -1244,7 +1249,7 @@ func compareSchemas(oldSchema, newSchema *glint.PrinterSchema) CompatibilityResu
 	result := CompatibilityResult{
 		BackwardCompatible: true,
 		ForwardCompatible:  true,
-		Changes:           []SchemaChange{},
+		Changes:            []SchemaChange{},
 	}
 
 	// Build field maps for easy comparison
@@ -1298,7 +1303,7 @@ func compareSchemas(oldSchema, newSchema *glint.PrinterSchema) CompatibilityResu
 // buildFieldMap creates a flat map of field paths to field definitions
 func buildFieldMap(schema *glint.PrinterSchema, pathPrefix string) map[string]glint.PrinterSchemaField {
 	fields := make(map[string]glint.PrinterSchemaField)
-	
+
 	for _, field := range schema.Fields {
 		fieldPath := field.Name
 		if pathPrefix != "" {
@@ -1320,3 +1325,4 @@ func areTypesCompatible(oldField, newField glint.PrinterSchemaField) bool {
 func getFieldTypeName(field glint.PrinterSchemaField) string {
 	return field.TypeID.String()
 }
+
