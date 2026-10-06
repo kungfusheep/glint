@@ -1,0 +1,36 @@
+{
+  "name": "@glint/decoder",
+  "version": "0.1.0",
+  "description": "Zero-dependency TypeScript decoder for Glint binary format",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node dist/test/decoder.test.js",
+    "test:all": "npm run build && node dist/test/decoder.test.js && node dist/test/go-ported.test.js && node dist/test/real-data.test.js",
+    "bench": "npm run build && node benchmark-clean.js",
+    "bench:debug": "npm run build && node --inspect-brk benchmark-clean.js",
+    "bench:compare": "npm run build && cd test && node ../dist/test/benchmark-comparison.js",
+    "example": "npm run build && node dist/examples/basic.js"
+  },
+  "keywords": [
+    "glint",
+    "binary",
+    "serialization",
+    "decoder"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@msgpack/msgpack": "^3.1.2",
+    "@types/node": "^18.0.0",
+    "avsc": "^5.7.9",
+    "cbor-x": "^1.6.0",
+    "flatbuffers": "^25.2.10",
+    "protobufjs": "^7.5.3",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
